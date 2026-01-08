@@ -206,19 +206,20 @@ async function postJson(url, payload, ms=12000){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), ms);
   try{
+    // IMPORTANT: text/plain => kein CORS-Preflight, Apps Script funktioniert stabil
     const r = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify(payload),
       signal: ctrl.signal
     });
     const text = await r.text();
-    // Apps Script antwortet oft mit JSON-Text, aber wir sind tolerant
     try { return JSON.parse(text); } catch { return { ok: r.ok, raw: text }; }
   } finally {
     clearTimeout(t);
   }
 }
+
 
 /* ===================== INIT ===================== */
 (async function init(){
