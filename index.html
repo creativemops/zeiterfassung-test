@@ -17,7 +17,6 @@ body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Aria
 .wrap{max-width:520px;margin:0 auto;padding:16px}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px}
 h1{font-size:18px;margin:0}
-h2{font-size:18px;margin:0}
 .meta{color:var(--muted);font-size:13px;margin-top:6px}
 .pill{display:inline-block;padding:8px 14px;border-radius:999px;font-weight:800;margin-top:12px}
 .in{background:#dcfce7;color:#065f46}
@@ -92,18 +91,18 @@ let dir = null;
 /* ===================== HELPERS ===================== */
 const $ = id => document.getElementById(id);
 
+function showMsg(text,type){
+  const el = $("msg");
+  el.className = "msg " + type;
+  el.textContent = text;
+  el.classList.remove("hidden");
+}
+
 function updatePin(){
   for(let i=0;i<4;i++){
     $("p"+i).textContent = pin[i] ? "•" : "";
   }
   $("stamp").disabled = pin.length !== 4;
-}
-
-function msg(text,type){
-  const el = $("msg");
-  el.className = "msg " + type;
-  el.textContent = text;
-  el.classList.remove("hidden");
 }
 
 function haversine(lat1,lon1,lat2,lon2){
@@ -116,44 +115,66 @@ function haversine(lat1,lon1,lat2,lon2){
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 
-/* ===================== CSV ===================== */
+/* ===================== CSV PARSER (ROBUST) ===================== */
 function csvToMap(csv){
-  const l=csv.trim().split(/\r?\n/);
-  const h=l[0].split(",");
-  const i=c=>h.indexOf(c);
-  const m={};
-  for(let x=1;x<l.length;x++){
-    const c=l[x].split(",");
-    if(c[i("active")]!=="1") continue;
-    m[c[i("site_id")]]={
-      name:c[i("name")],
-      address:c[i("address")],
-      lat:+c[i("lat")],
-      lng:+c[i("lng")],
-      radius:+c[i("radius_m")]
+  const lines = csv.trim().split(/\r?\n/);
+  if(lines.length < 2) return {};
+
+  const delim = lines[0].includes(";") ? ";" : ",";
+  const headers = lines[0].split(delim).map(h=>h.trim());
+  const idx = c => headers.indexOf(c);
+
+  const toNum = v => Number(String(v||"").replace(",", "."));
+
+  const map = {};
+  for(let i=1;i<lines.length;i++){
+    const cols = lines[i].split(delim).map(c=>c.trim());
+    const id = cols[idx("site_id")];
+    if(!id) continue;
+    if(String(cols[idx("active")]).trim() !== "1") continue;
+
+    map[id] = {
+      name: cols[idx("name")] || `Baustelle ${id}`,
+      address: cols[idx("address")] || "",
+      lat: toNum(cols[idx("lat")]),
+      lng: toNum(cols[idx("lng")]),
+      radius: toNum(cols[idx("radius_m")]) || 0
     };
   }
-  return m;
+  return map;
 }
 
 /* ===================== INIT ===================== */
 (async function(){
-  const u=new URL(location.href);
-  siteId=u.searchParams.get("site");
-  dir=u.searchParams.get("dir");
+  const url = new URL(location.href);
+  siteId = url.searchParams.get("site");
+  dir = url.searchParams.get("dir");
 
-  const csv=await fetch(SHEET_CSV_URL,{cache:"no-store"}).then(r=>r.text());
-  SITE_MAP=csvToMap(csv);
+  try{
+    const csv = await fetch(SHEET_CSV_URL,{cache:"no-store"}).then(r=>r.text());
+    SITE_MAP = csvToMap(csv);
+  }catch(e){
+    showMsg("❌ Baustellenliste konnte nicht geladen werden","err");
+    return;
+  }
 
-  const s=SITE_MAP[siteId];
-  if(!s){ msg("❌ Baustelle nicht gefunden","err"); return; }
+  showMsg(`ℹ️ Baustellen geladen: ${Object.keys(SITE_MAP).length}`,"warn");
 
-  $("siteInfo").innerHTML=`<b>${s.name}</b><br>${s.address}`;
-  $("dirPill").textContent=dir==="in"?"🟢 KOMMEN":"🔴 GEHEN";
-  $("dirPill").className="pill "+(dir==="in"?"in":"out");
+  const s = SITE_MAP[siteId];
+  if(!s){
+    showMsg("❌ Baustelle nicht gefunden","err");
+    return;
+  }
 
-  const saved=localStorage.getItem(STORAGE_KEY);
-  if(saved){ pin=saved; updatePin(); }
+  $("siteInfo").innerHTML = `<b>${s.name}</b><br>${s.address}`;
+  $("dirPill").textContent = dir==="in"?"🟢 KOMMEN":"🔴 GEHEN";
+  $("dirPill").className = "pill " + (dir==="in"?"in":"out");
+
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if(saved){
+    pin = saved;
+    updatePin();
+  }
 })();
 
 /* ===================== EVENTS ===================== */
@@ -166,12 +187,20 @@ $("forget").onclick=()=>{ localStorage.removeItem(STORAGE_KEY); pin=""; updatePi
 
 $("stamp").onclick=()=>{
   navigator.geolocation.getCurrentPosition(pos=>{
-    const s=SITE_MAP[siteId];
-    const d=haversine(pos.coords.latitude,pos.coords.longitude,s.lat,s.lng);
-    if(d>s.radius){ msg(`⛔ Zu weit weg (${Math.round(d)} m)`,`err`); return; }
+    const s = SITE_MAP[siteId];
+    const d = haversine(pos.coords.latitude,pos.coords.longitude,s.lat,s.lng);
+
+    showMsg(`📍 Distanz ${Math.round(d)} m (Radius ${s.radius} m)`,"warn");
+
+    if(d > s.radius){
+      showMsg(`⛔ Zu weit weg (${Math.round(d)} m)`,`err`);
+      return;
+    }
+
     localStorage.setItem(STORAGE_KEY,pin);
-    msg("✅ Stempelung gespeichert","ok");
-  },()=>msg("⛔ GPS nicht erlaubt","err"),{enableHighAccuracy:true});
+    showMsg("✅ Stempelung gespeichert","ok");
+
+  },()=>showMsg("⛔ GPS nicht erlaubt","err"),{enableHighAccuracy:true});
 };
 </script>
 </body>
