@@ -162,6 +162,7 @@ function gvizToMap(txt){
   }
 
   showMsg(`ℹ️ Baustellen geladen: ${Object.keys(SITE_MAP).length}`,"warn");
+  showMsg(`ℹ️ Baustellen: ${Object.keys(SITE_MAP).slice(0,10).join(", ")}`,"warn");
 
   const s = SITE_MAP[siteId];
   if(!s){
