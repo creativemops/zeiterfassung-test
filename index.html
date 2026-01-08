@@ -80,14 +80,20 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:12px}
 
 <script>
 /* ===================== KONFIG ===================== */
-// Publish-ID aus deinem pubhtml-Link:
+// Baustellenliste (published CSV aus Google Sheet)
 const PUBLISHED_ID = "2PACX-1vTuiGWgjdrDQBPaCXxysMOwGI5980QNzIV1Uopi4Mj1cUi2RBxXO5avvidzBUGoJNuY8mEjywSeS00F";
 const GID = "0";
-
-// CSV-Endpunkt der veröffentlichten Tabelle:
 const PUBLISHED_CSV_URL = `https://docs.google.com/spreadsheets/d/e/${PUBLISHED_ID}/pub?gid=${encodeURIComponent(GID)}&single=true&output=csv`;
 
-const STORAGE_KEY = "hf_employee_pin";
+// Logging Endpoint (dein Apps Script)
+const LOG_ENDPOINT_URL = "https://script.google.com/macros/s/AKfycbyme0qOs30XbDl-OCudxsd0DTvX4RTZKQSkIu55edZD0FT3plb8zw4Wo9ZnQDEqVKFO/exec";
+
+// !!! Token muss identisch im Apps Script stehen !!!
+const LOG_TOKEN = "CHANGE_ME_SECRET";
+
+// Local Storage Keys
+const STORAGE_PIN = "hf_employee_pin";
+const STORAGE_DEVICE = "hf_device_id";
 
 /* ===================== STATE ===================== */
 let SITE_MAP = {};
@@ -111,6 +117,14 @@ function updatePin(){
   $("stamp").disabled = pin.length !== 4;
 }
 
+function getOrCreateDeviceId(){
+  let id = localStorage.getItem(STORAGE_DEVICE);
+  if(id && id.length > 10) return id;
+  id = "dev_" + Math.random().toString(36).slice(2) + "_" + Date.now().toString(36);
+  localStorage.setItem(STORAGE_DEVICE, id);
+  return id;
+}
+
 function haversine(lat1,lon1,lat2,lon2){
   const R=6371000;
   const dLat=(lat2-lat1)*Math.PI/180;
@@ -121,15 +135,12 @@ function haversine(lat1,lon1,lat2,lon2){
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 
-/* ===================== CSV PARSER (robust enough) ===================== */
 function detectDelimiter(headerLine){
-  // published CSV ist i.d.R. Komma, aber wir erkennen zur Sicherheit
   if(headerLine.includes(";")) return ";";
   if(headerLine.includes(",")) return ",";
-  return ","; // fallback
+  return ",";
 }
 
-// Einfacher CSV-Splitter, der Anführungszeichen berücksichtigt
 function splitCsvLine(line, delim){
   const out = [];
   let cur = "";
@@ -155,14 +166,13 @@ function csvToMap(csvText){
 
   const delim = detectDelimiter(lines[0]);
   const headers = splitCsvLine(lines[0], delim).map(h => h.trim());
-
   const idx = (name) => headers.indexOf(name);
-
   const toNum = (v) => Number(String(v ?? "").trim().replace(",", "."));
 
   const map = {};
   for(let r=1;r<lines.length;r++){
     const cols = splitCsvLine(lines[r], delim);
+
     const site = String(cols[idx("site_id")] ?? "").trim();
     if(!site) continue;
 
@@ -180,14 +190,31 @@ function csvToMap(csvText){
   return map;
 }
 
-/* ===================== LOAD ===================== */
-async function fetchWithTimeout(url, ms=8000){
+async function fetchWithTimeout(url, ms=12000){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), ms);
   try{
     const r = await fetch(url, { cache:"no-store", signal: ctrl.signal });
     if(!r.ok) throw new Error("HTTP " + r.status);
     return await r.text();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+async function postJson(url, payload, ms=12000){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), ms);
+  try{
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: ctrl.signal
+    });
+    const text = await r.text();
+    // Apps Script antwortet oft mit JSON-Text, aber wir sind tolerant
+    try { return JSON.parse(text); } catch { return { ok: r.ok, raw: text }; }
   } finally {
     clearTimeout(t);
   }
@@ -210,7 +237,7 @@ async function fetchWithTimeout(url, ms=8000){
     return;
   }
 
-  setTop("Lade Baustellenliste (CSV) …");
+  setTop("Lade Baustellenliste …");
   $("siteInfo").textContent = "Lade Baustelle …";
 
   try{
@@ -218,7 +245,7 @@ async function fetchWithTimeout(url, ms=8000){
     SITE_MAP = csvToMap(csv);
   }catch(e){
     setTop("Fehler beim Laden");
-    showMsg("❌ Baustellenliste konnte nicht geladen werden. Prüfe, ob der CSV-Link im Browser funktioniert.","err");
+    showMsg("❌ Baustellenliste konnte nicht geladen werden.","err");
     return;
   }
 
@@ -235,7 +262,7 @@ async function fetchWithTimeout(url, ms=8000){
   $("dirPill").textContent = dir==="in" ? "🟢 KOMMEN" : "🔴 GEHEN";
   $("dirPill").className = "pill " + (dir==="in" ? "in" : "out");
 
-  const saved = localStorage.getItem(STORAGE_KEY);
+  const saved = localStorage.getItem(STORAGE_PIN);
   if(saved && /^\d{4}$/.test(saved)){
     pin = saved;
     updatePin();
@@ -252,7 +279,7 @@ document.querySelectorAll("[data-k]").forEach(b=>{
 });
 $("back").onclick=()=>{ pin=pin.slice(0,-1); updatePin(); };
 $("clear").onclick=()=>{ pin=""; updatePin(); };
-$("forget").onclick=()=>{ localStorage.removeItem(STORAGE_KEY); pin=""; updatePin(); showMsg("✅ Code gelöscht.","ok"); };
+$("forget").onclick=()=>{ localStorage.removeItem(STORAGE_PIN); pin=""; updatePin(); showMsg("✅ Code gelöscht.","ok"); };
 
 $("stamp").onclick=()=>{
   const s = SITE_MAP[String(siteId).trim()];
@@ -260,8 +287,9 @@ $("stamp").onclick=()=>{
 
   showMsg("📍 Standort wird geprüft …","warn");
 
-  navigator.geolocation.getCurrentPosition(pos=>{
+  navigator.geolocation.getCurrentPosition(async pos=>{
     const d = haversine(pos.coords.latitude,pos.coords.longitude,s.lat,s.lng);
+
     showMsg(`📍 Distanz ${Math.round(d)} m (Radius ${s.radius} m)`,"warn");
 
     if(d > s.radius){
@@ -269,8 +297,36 @@ $("stamp").onclick=()=>{
       return;
     }
 
-    localStorage.setItem(STORAGE_KEY,pin);
-    showMsg(`✅ ${dir==="in" ? "KOMMEN" : "GEHEN"} gespeichert`,"ok");
+    // Device + PIN merken
+    const deviceId = getOrCreateDeviceId();
+    localStorage.setItem(STORAGE_PIN, pin);
+
+    // Logging Payload
+    const payload = {
+      token: LOG_TOKEN,
+      site_id: String(siteId).trim(),
+      direction: dir,
+      employee_code: pin,
+      device_id: deviceId,
+      lat: pos.coords.latitude,
+      lng: pos.coords.longitude,
+      distance_m: Math.round(d),
+      user_agent: navigator.userAgent
+    };
+
+    showMsg("☁️ Sende Stempelung …","warn");
+
+    try{
+      const res = await postJson(LOG_ENDPOINT_URL, payload, 12000);
+      if(res && res.ok){
+        showMsg(`✅ ${dir==="in" ? "KOMMEN" : "GEHEN"} gespeichert (Log ok)`,"ok");
+      }else{
+        showMsg("⚠️ Stempelung lokal ok, aber Log fehlgeschlagen. Bitte erneut versuchen.","warn");
+      }
+    }catch(e){
+      showMsg("⚠️ Stempelung lokal ok, aber Log fehlgeschlagen (Netz). Bitte erneut versuchen.","warn");
+    }
+
   },()=>{
     showMsg("⛔ GPS nicht erlaubt/fehlgeschlagen. Bitte Standort erlauben und neu versuchen.","err");
   },{enableHighAccuracy:true, timeout: 10000, maximumAge: 0});
