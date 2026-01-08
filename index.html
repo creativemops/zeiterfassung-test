@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zeiterfassung Baustelle</title>
+
+<style>
+:root{
+  --bg:#f6f7f9; --card:#fff; --text:#111827; --muted:#6b7280;
+  --border:#e5e7eb; --shadow:0 10px 30px rgba(0,0,0,.07);
+  --radius:18px; --btn-h:56px;
+  --green:#16a34a; --red:#dc2626; --blue:#2563eb;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text)}
+.wrap{max-width:520px;margin:0 auto;padding:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px}
+h1{font-size:18px;margin:0}
+h2{font-size:18px;margin:0}
+.meta{color:var(--muted);font-size:13px;margin-top:6px}
+.pill{display:inline-block;padding:8px 14px;border-radius:999px;font-weight:800;margin-top:12px}
+.in{background:#dcfce7;color:#065f46}
+.out{background:#fee2e2;color:#7f1d1d}
+.pinRow{display:flex;gap:10px;justify-content:center;margin:14px 0}
+.pinBox{width:52px;height:56px;border-radius:14px;border:1px solid var(--border);display:grid;place-items:center;font-size:22px;font-weight:900}
+.keypad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.key{height:54px;border-radius:16px;border:1px solid var(--border);background:#fff;font-size:18px;font-weight:800}
+.row{display:flex;gap:10px;margin-top:12px}
+button{height:var(--btn-h);border-radius:16px;border:0;font-size:16px;font-weight:800;cursor:pointer}
+.primary{background:var(--blue);color:#fff}
+.secondary{background:#fff;border:1px solid var(--border)}
+.msg{margin-top:12px;padding:12px;border-radius:14px;font-size:13px}
+.ok{background:#ecfdf5;border:1px solid #bbf7d0}
+.err{background:#fef2f2;border:1px solid #fecaca}
+.warn{background:#fffbeb;border:1px solid #fde68a}
+.hidden{display:none}
+footer{text-align:center;color:var(--muted);font-size:12px;margin-top:12px}
+</style>
+</head>
+
+<body>
+<div class="wrap">
+  <div class="card">
+    <h1>🏗️ Zeiterfassung</h1>
+    <div id="siteInfo" class="meta">Lade Baustelle …</div>
+    <div id="dirPill" class="pill"></div>
+
+    <div class="pinRow">
+      <div class="pinBox" id="p0"></div>
+      <div class="pinBox" id="p1"></div>
+      <div class="pinBox" id="p2"></div>
+      <div class="pinBox" id="p3"></div>
+    </div>
+
+    <div class="keypad">
+      <button class="key" data-k="1">1</button>
+      <button class="key" data-k="2">2</button>
+      <button class="key" data-k="3">3</button>
+      <button class="key" data-k="4">4</button>
+      <button class="key" data-k="5">5</button>
+      <button class="key" data-k="6">6</button>
+      <button class="key" data-k="7">7</button>
+      <button class="key" data-k="8">8</button>
+      <button class="key" data-k="9">9</button>
+      <button class="key" id="clear">C</button>
+      <button class="key" data-k="0">0</button>
+      <button class="key" id="back">⌫</button>
+    </div>
+
+    <div class="row">
+      <button class="secondary" id="forget">Code löschen</button>
+      <button class="primary" id="stamp" disabled>Jetzt stempeln</button>
+    </div>
+
+    <div id="msg" class="msg hidden"></div>
+    <footer>GPS-Prüfung aktiv · Du musst an der Baustelle sein</footer>
+  </div>
+</div>
+
+<script>
+/* ===================== KONFIG ===================== */
+const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1-nsAJvPlvxNTbdzVD5pj0O_J_DQWgALuYaTl9oFyU8c/export?format=csv&gid=0";
+const STORAGE_KEY = "hf_employee_pin";
+
+/* ===================== STATE ===================== */
+let SITE_MAP = {};
+let pin = "";
+let siteId = null;
+let dir = null;
+
+/* ===================== HELPERS ===================== */
+const $ = id => document.getElementById(id);
+
+function updatePin(){
+  for(let i=0;i<4;i++){
+    $("p"+i).textContent = pin[i] ? "•" : "";
+  }
+  $("stamp").disabled = pin.length !== 4;
+}
+
+function msg(text,type){
+  const el = $("msg");
+  el.className = "msg " + type;
+  el.textContent = text;
+  el.classList.remove("hidden");
+}
+
+function haversine(lat1,lon1,lat2,lon2){
+  const R=6371000;
+  const dLat=(lat2-lat1)*Math.PI/180;
+  const dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+
+    Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*
+    Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+/* ===================== CSV ===================== */
+function csvToMap(csv){
+  const l=csv.trim().split(/\r?\n/);
+  const h=l[0].split(",");
+  const i=c=>h.indexOf(c);
+  const m={};
+  for(let x=1;x<l.length;x++){
+    const c=l[x].split(",");
+    if(c[i("active")]!=="1") continue;
+    m[c[i("site_id")]]={
+      name:c[i("name")],
+      address:c[i("address")],
+      lat:+c[i("lat")],
+      lng:+c[i("lng")],
+      radius:+c[i("radius_m")]
+    };
+  }
+  return m;
+}
+
+/* ===================== INIT ===================== */
+(async function(){
+  const u=new URL(location.href);
+  siteId=u.searchParams.get("site");
+  dir=u.searchParams.get("dir");
+
+  const csv=await fetch(SHEET_CSV_URL,{cache:"no-store"}).then(r=>r.text());
+  SITE_MAP=csvToMap(csv);
+
+  const s=SITE_MAP[siteId];
+  if(!s){ msg("❌ Baustelle nicht gefunden","err"); return; }
+
+  $("siteInfo").innerHTML=`<b>${s.name}</b><br>${s.address}`;
+  $("dirPill").textContent=dir==="in"?"🟢 KOMMEN":"🔴 GEHEN";
+  $("dirPill").className="pill "+(dir==="in"?"in":"out");
+
+  const saved=localStorage.getItem(STORAGE_KEY);
+  if(saved){ pin=saved; updatePin(); }
+})();
+
+/* ===================== EVENTS ===================== */
+document.querySelectorAll("[data-k]").forEach(b=>{
+  b.onclick=()=>{ if(pin.length<4){ pin+=b.dataset.k; updatePin(); } }
+});
+$("back").onclick=()=>{ pin=pin.slice(0,-1); updatePin(); };
+$("clear").onclick=()=>{ pin=""; updatePin(); };
+$("forget").onclick=()=>{ localStorage.removeItem(STORAGE_KEY); pin=""; updatePin(); };
+
+$("stamp").onclick=()=>{
+  navigator.geolocation.getCurrentPosition(pos=>{
+    const s=SITE_MAP[siteId];
+    const d=haversine(pos.coords.latitude,pos.coords.longitude,s.lat,s.lng);
+    if(d>s.radius){ msg(`⛔ Zu weit weg (${Math.round(d)} m)`,`err`); return; }
+    localStorage.setItem(STORAGE_KEY,pin);
+    msg("✅ Stempelung gespeichert","ok");
+  },()=>msg("⛔ GPS nicht erlaubt","err"),{enableHighAccuracy:true});
+};
+</script>
+</body>
+</html>
