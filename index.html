@@ -10,12 +10,12 @@
   --bg:#f6f7f9; --card:#fff; --text:#111827; --muted:#6b7280;
   --border:#e5e7eb; --shadow:0 10px 30px rgba(0,0,0,.07);
   --radius:18px; --btn-h:56px;
-  --green:#16a34a; --red:#dc2626; --blue:#2563eb;
+  --blue:#2563eb;
 }
 *{box-sizing:border-box}
 body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text)}
 .wrap{max-width:520px;margin:0 auto;padding:16px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px}
+.card{background:#fff;border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px}
 h1{font-size:18px;margin:0}
 .meta{color:var(--muted);font-size:13px;margin-top:6px}
 .pill{display:inline-block;padding:8px 14px;border-radius:999px;font-weight:800;margin-top:12px}
@@ -79,9 +79,8 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:12px}
 
 <script>
 /* ===================== KONFIG ===================== */
-const GVIZ_URL =
-  "https://docs.google.com/spreadsheets/d/1-nsAJvPlvxNTbdzVD5pj0O_J_DQWgALuYaTl9oFyU8c/gviz/tq?gid=0&tqx=out:json";
-
+const SPREADSHEET_ID = "1-nsAJvPlvxNTbdzVD5pj0O_J_DQWgALuYaTl9oFyU8c";
+const GID = "0";
 const STORAGE_KEY = "hf_employee_pin";
 
 /* ===================== STATE ===================== */
@@ -117,28 +116,28 @@ function haversine(lat1,lon1,lat2,lon2){
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 
-/* ===================== GVIZ PARSER ===================== */
-function gvizToMap(txt){
-  const json = txt.substring(txt.indexOf("{"), txt.lastIndexOf("}")+1);
-  const obj = JSON.parse(json);
+/* ===================== GVIZ -> MAP ===================== */
+function gvizResponseToMap(resp){
+  const cols = resp.table.cols.map(c => (c.label || "").trim());
+  const rows = resp.table.rows;
+  const idx = (name) => cols.indexOf(name);
 
-  const cols = obj.table.cols.map(c => (c.label||"").trim());
-  const rows = obj.table.rows;
-  const idx = c => cols.indexOf(c);
-  const toNum = v => Number(String(v||"").replace(",", "."));
+  const toNum = (v) => Number(String(v ?? "").trim().replace(",", "."));
 
   const map = {};
   for(const r of rows){
     const c = r.c;
-    const get = k => (c[idx(k)] ? c[idx(k)].v : "");
+    const get = (name) => (c[idx(name)] ? c[idx(name)].v : "");
 
-    const site = String(get("site_id")).trim();
+    const site = String(get("site_id") ?? "").trim();
     if(!site) continue;
-    if(String(get("active")).trim() !== "1") continue;
+
+    const active = String(get("active") ?? "1").trim();
+    if(active !== "1") continue;
 
     map[site] = {
-      name: get("name") || `Baustelle ${site}`,
-      address: get("address") || "",
+      name: String(get("name") ?? `Baustelle ${site}`),
+      address: String(get("address") ?? ""),
       lat: toNum(get("lat")),
       lng: toNum(get("lng")),
       radius: toNum(get("radius_m")) || 0
@@ -147,37 +146,81 @@ function gvizToMap(txt){
   return map;
 }
 
+/* ===================== JSONP Loader (umgeht CORS) ===================== */
+function loadSitesViaGvizJsonp(){
+  return new Promise((resolve, reject) => {
+    const cb = "__gviz_cb_" + Math.random().toString(36).slice(2);
+    window[cb] = (resp) => {
+      try{
+        const map = gvizResponseToMap(resp);
+        resolve(map);
+      }catch(e){
+        reject(e);
+      }finally{
+        delete window[cb];
+        script.remove();
+      }
+    };
+
+    // responseHandler ist der JSONP-Callback
+    const tqx = encodeURIComponent(`out:json;responseHandler:${cb}`);
+    const url = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?gid=${encodeURIComponent(GID)}&tqx=${tqx}`;
+
+    const script = document.createElement("script");
+    script.src = url;
+    script.onerror = () => {
+      delete window[cb];
+      script.remove();
+      reject(new Error("JSONP load failed"));
+    };
+    document.head.appendChild(script);
+  });
+}
+
 /* ===================== INIT ===================== */
-(async function(){
+(async function init(){
   const url = new URL(location.href);
   siteId = url.searchParams.get("site");
-  dir = url.searchParams.get("dir");
+  dir = url.searchParams.get("dir"); // "in" | "out"
+
+  if(dir !== "in" && dir !== "out"){
+    showMsg("⚠️ Bitte KOMMEN- oder GEHEN-QR scannen (dir=in|out fehlt).","warn");
+    return;
+  }
+  if(!siteId){
+    showMsg("⚠️ Baustellen-ID fehlt (site=...).","warn");
+    return;
+  }
+
+  showMsg("⏳ Lade Baustellenliste …","warn");
 
   try{
-    const txt = await fetch(GVIZ_URL,{cache:"no-store"}).then(r=>r.text());
-    SITE_MAP = gvizToMap(txt);
+    SITE_MAP = await loadSitesViaGvizJsonp();
   }catch(e){
-    showMsg("❌ Baustellenliste konnte nicht geladen werden","err");
+    showMsg("❌ Baustellenliste konnte nicht geladen werden (Sheet evtl. nicht freigegeben).","err");
     return;
   }
 
   showMsg(`ℹ️ Baustellen geladen: ${Object.keys(SITE_MAP).length}`,"warn");
-  showMsg(`ℹ️ Baustellen: ${Object.keys(SITE_MAP).slice(0,10).join(", ")}`,"warn");
 
-  const s = SITE_MAP[siteId];
+  const s = SITE_MAP[String(siteId).trim()];
   if(!s){
-    showMsg("❌ Baustelle nicht gefunden","err");
+    showMsg(`❌ Baustelle nicht gefunden (site=${siteId}). Prüfe site_id im Sheet.`,"err");
     return;
   }
 
   $("siteInfo").innerHTML = `<b>${s.name}</b><br>${s.address}`;
-  $("dirPill").textContent = dir==="in"?"🟢 KOMMEN":"🔴 GEHEN";
-  $("dirPill").className = "pill " + (dir==="in"?"in":"out");
+  $("dirPill").textContent = dir==="in" ? "🟢 KOMMEN" : "🔴 GEHEN";
+  $("dirPill").className = "pill " + (dir==="in" ? "in" : "out");
 
   const saved = localStorage.getItem(STORAGE_KEY);
-  if(saved){
+  if(saved && /^\d{4}$/.test(saved)){
     pin = saved;
     updatePin();
+    showMsg("ℹ️ Code vom Gerät geladen.","ok");
+  }else{
+    updatePin();
+    showMsg("ℹ️ Bitte 4-stelligen Code eingeben.","warn");
   }
 })();
 
@@ -187,11 +230,15 @@ document.querySelectorAll("[data-k]").forEach(b=>{
 });
 $("back").onclick=()=>{ pin=pin.slice(0,-1); updatePin(); };
 $("clear").onclick=()=>{ pin=""; updatePin(); };
-$("forget").onclick=()=>{ localStorage.removeItem(STORAGE_KEY); pin=""; updatePin(); };
+$("forget").onclick=()=>{ localStorage.removeItem(STORAGE_KEY); pin=""; updatePin(); showMsg("✅ Code gelöscht.","ok"); };
 
 $("stamp").onclick=()=>{
+  const s = SITE_MAP[String(siteId).trim()];
+  if(!s){ showMsg("❌ Baustelle nicht gefunden.","err"); return; }
+
+  showMsg("📍 Standort wird geprüft …","warn");
+
   navigator.geolocation.getCurrentPosition(pos=>{
-    const s = SITE_MAP[siteId];
     const d = haversine(pos.coords.latitude,pos.coords.longitude,s.lat,s.lng);
 
     showMsg(`📍 Distanz ${Math.round(d)} m (Radius ${s.radius} m)`,"warn");
@@ -202,9 +249,11 @@ $("stamp").onclick=()=>{
     }
 
     localStorage.setItem(STORAGE_KEY,pin);
-    showMsg("✅ Stempelung gespeichert","ok");
+    showMsg(`✅ ${dir==="in" ? "KOMMEN" : "GEHEN"} gespeichert`,"ok");
 
-  },()=>showMsg("⛔ GPS nicht erlaubt","err"),{enableHighAccuracy:true});
+  },()=>{
+    showMsg("⛔ GPS nicht erlaubt/fehlgeschlagen. Bitte Standort erlauben und neu versuchen.","err");
+  },{enableHighAccuracy:true, timeout: 10000, maximumAge: 0});
 };
 </script>
 </body>
