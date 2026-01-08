@@ -79,7 +79,9 @@ footer{text-align:center;color:var(--muted);font-size:12px;margin-top:12px}
 
 <script>
 /* ===================== KONFIG ===================== */
-const SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1-nsAJvPlvxNTbdzVD5pj0O_J_DQWgALuYaTl9oFyU8cgviz/tq?gid=0&tqx=out:json";
+const GVIZ_URL =
+  "https://docs.google.com/spreadsheets/d/1-nsAJvPlvxNTbdzVD5pj0O_J_DQWgALuYaTl9oFyU8c/gviz/tq?gid=0&tqx=out:json";
+
 const STORAGE_KEY = "hf_employee_pin";
 
 /* ===================== STATE ===================== */
@@ -115,30 +117,31 @@ function haversine(lat1,lon1,lat2,lon2){
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 
-/* ===================== CSV PARSER (ROBUST) ===================== */
-function csvToMap(csv){
-  const lines = csv.trim().split(/\r?\n/);
-  if(lines.length < 2) return {};
+/* ===================== GVIZ PARSER ===================== */
+function gvizToMap(txt){
+  const json = txt.substring(txt.indexOf("{"), txt.lastIndexOf("}")+1);
+  const obj = JSON.parse(json);
 
-  const delim = lines[0].includes(";") ? ";" : ",";
-  const headers = lines[0].split(delim).map(h=>h.trim());
-  const idx = c => headers.indexOf(c);
-
+  const cols = obj.table.cols.map(c => (c.label||"").trim());
+  const rows = obj.table.rows;
+  const idx = c => cols.indexOf(c);
   const toNum = v => Number(String(v||"").replace(",", "."));
 
   const map = {};
-  for(let i=1;i<lines.length;i++){
-    const cols = lines[i].split(delim).map(c=>c.trim());
-    const id = cols[idx("site_id")];
-    if(!id) continue;
-    if(String(cols[idx("active")]).trim() !== "1") continue;
+  for(const r of rows){
+    const c = r.c;
+    const get = k => (c[idx(k)] ? c[idx(k)].v : "");
 
-    map[id] = {
-      name: cols[idx("name")] || `Baustelle ${id}`,
-      address: cols[idx("address")] || "",
-      lat: toNum(cols[idx("lat")]),
-      lng: toNum(cols[idx("lng")]),
-      radius: toNum(cols[idx("radius_m")]) || 0
+    const site = String(get("site_id")).trim();
+    if(!site) continue;
+    if(String(get("active")).trim() !== "1") continue;
+
+    map[site] = {
+      name: get("name") || `Baustelle ${site}`,
+      address: get("address") || "",
+      lat: toNum(get("lat")),
+      lng: toNum(get("lng")),
+      radius: toNum(get("radius_m")) || 0
     };
   }
   return map;
@@ -151,8 +154,8 @@ function csvToMap(csv){
   dir = url.searchParams.get("dir");
 
   try{
-    const csv = await fetch(SHEET_CSV_URL,{cache:"no-store"}).then(r=>r.text());
-    SITE_MAP = csvToMap(csv);
+    const txt = await fetch(GVIZ_URL,{cache:"no-store"}).then(r=>r.text());
+    SITE_MAP = gvizToMap(txt);
   }catch(e){
     showMsg("❌ Baustellenliste konnte nicht geladen werden","err");
     return;
@@ -193,7 +196,7 @@ $("stamp").onclick=()=>{
     showMsg(`📍 Distanz ${Math.round(d)} m (Radius ${s.radius} m)`,"warn");
 
     if(d > s.radius){
-      showMsg(`⛔ Zu weit weg (${Math.round(d)} m)`,`err`);
+      showMsg(`⛔ Zu weit weg (${Math.round(d)} m)`,"err");
       return;
     }
 
